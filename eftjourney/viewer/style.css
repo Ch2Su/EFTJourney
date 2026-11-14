@@ -9,6 +9,7 @@
   --faint: #6b727a;
   --route: #2f8cff;
   --route-soft: rgba(47, 140, 255, 0.35);
+--auto: #ff5ccd; /* the route found from the raid's recording */
   --kill: #ff7a3d;
   --death: #ff2e2e;
   --ok: #3fcf73;
@@ -179,6 +180,7 @@ textarea { width: 100%; resize: vertical; min-height: 54px; }
 .ri-map small { color: var(--faint); font-weight: 400; margin-left: 4px; }
 .ri-meta, .ri-stats { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
 .ri-stats .warn { color: var(--warn); }
+.ri-stats .auto { color: var(--auto); }
 .list-empty { color: var(--muted); padding: 18px 12px; font-size: 13px; }
 .list-note { color: var(--faint); padding: 6px 8px 4px; font-size: 12px; }
 
@@ -251,6 +253,7 @@ textarea { width: 100%; resize: vertical; min-height: 54px; }
 #layers select { margin-top: 2px; }
 #layers .note { max-width: 180px; color: var(--warn); font-size: 12px; }
 .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 2px; }
+#layers .legend { margin: -4px 0 2px 26px; color: var(--faint); font-size: 11.5px; }
 
 .empty {
   position: absolute;
@@ -303,6 +306,7 @@ textarea { width: 100%; resize: vertical; min-height: 54px; }
 #speed { flex: none; }
 #track-bar { position: relative; flex: 1; height: 34px; min-width: 120px; }
 #ticks { position: absolute; left: 8px; right: 8px; top: 0; bottom: 0; pointer-events: none; }
+#sure-band { position: absolute; left: 8px; right: 8px; bottom: 0; height: 4px; border-radius: 2px; pointer-events: none; }
 .tick { position: absolute; top: 9px; width: 2px; height: 16px; margin-left: -1px; border-radius: 1px; background: var(--route-soft); }
 .tick.kill { background: var(--kill); width: 3px; top: 5px; height: 24px; }
 .tick.fix { background: #6b727a; top: 12px; height: 10px; }

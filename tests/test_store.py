@@ -39,7 +39,7 @@ NORMAL_ROW = {
     "id": "20261027-224801-bigmap", "map": "bigmap", "mode": "pve", "title": "",
     "startedAt": "2026-10-27T22:48:01.792+09:00", "endedAt": "2026-10-27T22:57:46.599+09:00",
     "duration": 584.8, "durationApprox": False, "samples": 2, "fixes": 0, "distance": 5.0,
-    "kills": 0, "outcome": "unknown", "demo": False,
+    "kills": 0, "outcome": "unknown", "demo": False, "auto": False,
 }
 NORMAL_DOC = dict(make_raid(), detectedMap="bigmap", edited=False)  # and its merged(), likewise
 

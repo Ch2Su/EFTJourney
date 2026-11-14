@@ -10,6 +10,8 @@ dependencies = []
 [project.optional-dependencies]
 # Smaller hover thumbnails for 2560x1440 screenshots (falls back to the original file without it)
 thumbs = ["Pillow>=10"]
+# Routes from raid recordings (eftjourney auto); also needs FFmpeg and the MegaLoc model
+auto = ["numpy>=1.24", "onnxruntime>=1.17"]
 
 [project.scripts]
 eftjourney = "eftjourney.cli:main"
@@ -19,7 +21,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["eftjourney"]
+packages = ["eftjourney", "eftjourney.auto"]
 
 [tool.setuptools.package-data]
 eftjourney = ["viewer/*", "data/*.json"]

@@ -37,6 +37,9 @@ SOFTWARE.
   처음 쓸 때 받아 이 PC에만 캐시합니다.
 - 지도 타일: tarkov.dev가 제공하는 이미지입니다. 브라우저가 불러오며, 공개된 라이선스가 없어 저장소에 넣지 않습니다.
 - 탈출구·트랜짓·스폰과 한국어 이름: json.tarkov.dev API. `scripts/update_maps.py`가 이 데이터로 `maps.json`을 만듭니다.
+- 녹화 영상 분석(`auto`, 선택 기능): 사용자가 직접 설치하거나 받아서 지정하는 것들입니다. 라이선스는 각 배포처를 따릅니다.
+  - [MegaLoc](https://huggingface.co/gberton/MegaLoc) 모델(`megaloc.onnx`, 저자들이 공개한 ONNX 변환본)
+  - [numpy](https://numpy.org), [ONNX Runtime](https://onnxruntime.ai), [FFmpeg](https://ffmpeg.org)
 
 ## 게임
 

@@ -6,6 +6,7 @@ GET  /api/status               detected folders, watcher state, data version
 GET  /api/maps                 map metadata (eftjourney/data/maps.json)
 GET  /api/raids                raid summaries, newest first
 GET  /api/raids/<id>           one raid, generated data merged with user edits
+GET  /api/raids/<id>/auto      its route found from its recording, if there is one
 PUT  /api/raids/<id>/edits     save user edits (kills, outcome, map override, notes)
 GET  /mapsvg/<key>.svg         tarkov.dev map SVG, cached under data/cache/maps
 GET  /shots/<file>             an in-game screenshot from the screenshots folder
@@ -301,6 +302,18 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if doc is None:
                 self._error(404, "raid not found")
+            else:
+                self._json(doc)
+        elif m := re.fullmatch(r"/api/raids/([^/]+)/auto", path):
+            try:
+                doc = ctx.store.load_auto(m.group(1))
+            except KeyError:
+                doc = None
+            except RecursionError as exc:  # a route file changed by hand, nested too deep for its JSON round trip
+                self._unsendable(exc, str(ctx.store.auto_file(m.group(1))))
+                return
+            if doc is None:
+                self._error(404, "no automatic route")
             else:
                 self._json(doc)
         elif m := re.fullmatch(r"/mapsvg/([a-z0-9-]+)\.svg", path):

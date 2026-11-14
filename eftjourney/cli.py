@@ -1,4 +1,4 @@
-"""Command line entry point: py -m eftjourney [run|scan|serve|demo|doctor]."""
+"""Command line entry point: py -m eftjourney [run|scan|serve|demo|doctor|auto]."""
 from __future__ import annotations
 
 import argparse
@@ -27,6 +27,7 @@ MAX_INTERVAL = 3600.0  # time.sleep overflows on absurd values like 1e10
 PROBE_TIMEOUT = 1.0  # seconds to wait for whatever holds a taken port to answer
 MAX_WARNINGS = 10  # warnings of one scan shown on the console and in /api/status
 LOCK_FILE = "eftjourney.lock"  # in <data>/cache; run and scan hold an OS lock on it while they work
+AUTO_LOCK_FILE = "auto.lock"  # auto holds this one: it never rewrites raids, so it may run next to run
 # An atomic write's temp file (tmp<random>.tmp, <file name><random>.tmp): each try has a new name
 TEMP_NAME = re.compile(r"[^\\/'\"\s]+\.tmp\b")
 # A printed command quotes every value but those of letters (any script), digits and these: pasted
@@ -35,6 +36,7 @@ BARE_CHARS = frozenset("_-.:\\/")
 # No quotes keep these in both: PowerShell expands $ and ` in double quotes and ends them at “ ” „
 # as at ", cmd expands %. A folder with one is named in words instead.
 UNQUOTABLE = frozenset('$`%"\u201c\u201d\u201e')
+OUTCOME_KO = {"survived": "\uc0dd\uc874", "killed": "\uc0ac\ub9dd", "mia": "MIA", "runthrough": "\ub7f0\uc2a4\ub8e8", "left": "\ub098\uac10"}  # as the viewer says them
 
 
 def _setup_console() -> None:
@@ -129,7 +131,7 @@ def _error_key(error: str | None) -> str | None:
     return TEMP_NAME.sub("*.tmp", error) if error else error
 
 
-def _lock_data(data_dir: Path) -> int | None:
+def _lock_data(data_dir: Path, name: str = LOCK_FILE) -> int | None:
     """Lock the data folder for this process: the lock file's descriptor, or None when
     another process holds it. OSError when no lock can be taken there at all.
 
@@ -137,7 +139,7 @@ def _lock_data(data_dir: Path) -> int | None:
     journal in memory). The lock is the operating system's, not the file's: it goes
     with the process, so a crash or a closed console window leaves no stale lock.
     """
-    path = data_dir / "cache" / LOCK_FILE
+    path = data_dir / "cache" / name
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o666)
     try:
@@ -366,6 +368,99 @@ def cmd_doctor(rt: Runtime, args: argparse.Namespace) -> int:
         print("  (아직 없음 - 게임에서 스크린샷 키로 첫 스크린샷을 찍으면 생깁니다)")
     print(f"맵 정보        : {len(rt.maps.get('maps', []))}개 맵")
     print(f"저장된 레이드  : {len(rt.store.list_ids())}개")
+    _doctor_auto(rt)
+    return 0
+
+
+def _doctor_auto(rt) -> None:
+    """What `auto` needs, and what it found (no heavy import: only where things are)."""
+    from .auto import config, video
+
+    tools = config.resolve(rt.data_dir)
+    missing = config.missing_modules()
+    print("영상 자동 경로 (auto, 선택 기능):")
+    print("  파이썬 패키지: " + ("준비됨" if not missing else f"없음 - {', '.join(missing)} (py -m pip install \"eftjourney[auto]\")"))
+    print(f"  FFmpeg       : {tools.ffmpeg.parent if tools.ffmpeg and tools.ffprobe else '찾지 못함 (PATH에 두거나 auto --ffmpeg 로 폴더 지정)'}")
+    print(f"  MegaLoc 모델 : {tools.model}" + ("" if tools.model_found else f" 없음 ({config.MODEL_URL} 에서 받아 auto --model 로 지정)"))
+    if tools.videos and tools.videos.is_dir():
+        print(f"  녹화 폴더    : {tools.videos} (끝난 녹화 {len(video.list_recordings(tools.videos))}개)")
+    else:
+        print(f"  녹화 폴더    : {tools.videos or '모름'} 없음 (auto --videos 로 지정)")
+    count = sum(1 for raid_id in rt.store.list_ids() if rt.store._has_route(raid_id))
+    print(f"  자동 경로    : {count}개")
+    if sys.platform == "win32":
+        from .auto import outcome
+
+        languages = outcome.ocr_languages()
+        if languages is None:
+            print("  결과 화면 OCR: Windows OCR을 쓸 수 없습니다 (녹화에서 생존·사망을 읽지 못함)")
+        else:
+            print(f"  결과 화면 OCR: Windows OCR {', '.join(languages) or '언어 없음 (설정 > 시간 및 언어 > 언어에서 한국어 추가)'}")
+
+
+def _below_normal() -> None:
+    """Long analysis yields to the game and everything else; the FFmpeg it starts inherits this."""
+    try:
+        if sys.platform == "win32":
+            import ctypes
+
+            kernel32 = ctypes.windll.kernel32
+            kernel32.SetPriorityClass(kernel32.GetCurrentProcess(), 0x4000)  # BELOW_NORMAL_PRIORITY_CLASS
+        else:
+            os.nice(5)
+    except (OSError, AttributeError):
+        pass
+
+
+def cmd_auto(rt: Runtime, args: argparse.Namespace) -> int:
+    from .auto import config
+    from .builder import game_running
+
+    missing = config.missing_modules()
+    if missing:
+        print(f"영상 분석에 필요한 파이썬 패키지가 없습니다: {', '.join(missing)}")
+        print('설치:  py -m pip install "eftjourney[auto]"   (소스 폴더에서는  py -m pip install -e ".[auto]")')
+        return 1
+    tools = config.resolve(rt.data_dir, args.videos, args.ffmpeg, args.model)
+    problems = []
+    if not (tools.ffmpeg and tools.ffprobe):
+        problems.append("FFmpeg(ffmpeg, ffprobe)를 찾지 못했습니다. PATH에 두거나 --ffmpeg 로 그 폴더를 지정하세요.")
+    if not tools.model_found:
+        problems.append(f"MegaLoc 모델이 없습니다: {tools.model}\n"
+                        f"  {config.MODEL_URL} 에서 megaloc.onnx(약 460 MB)를 받아 --model 로 지정하세요.")
+    if not (tools.videos and tools.videos.is_dir()):
+        problems.append(f"녹화 폴더가 없습니다: {tools.videos}. --videos 로 OBS 녹화 폴더를 지정하세요.")
+    if problems:
+        for problem in problems:
+            print(problem)
+        return 1
+    config.remember(rt.data_dir, videos=args.videos, ffmpeg=args.ffmpeg, model=args.model)  # works: next time without
+    if game_running():
+        print("게임이 실행 중이라 분석을 시작하지 않았습니다. 영상 분석은 컴퓨터를 오래 쓰니 게임을 끈 뒤 실행하세요.")
+        return 1
+    _below_normal()
+    from .auto.analyse import analyse
+
+    print(f"녹화 폴더: {tools.videos}")
+    report = analyse(rt.store, rt.maps, rt.data_dir, tools, only=set(args.raid) if args.raid else None)
+    print(f"끝난 녹화 {report.recordings}개, 영상이 있는 레이드 {report.raids}개"
+          + (f" (이번에 새로 분석: {len(report.described)}개)" if report.described else ""))
+    for raid_id in report.routes:
+        check = report.checks.get(raid_id)
+        line = f"  자동 경로 저장: {raid_id}"
+        if check:
+            line += (f"  (스크린샷과 비교: {check['within'] * 100:.0f}%가 15 m 안, 오차 중앙값 {check['medianError']:g} m,"
+                     f" 확실한 구간 {check['sureShare'] * 100:.0f}%)")
+        print(line)
+    for raid_id, why in report.skipped.items():
+        print(f"  건너뜀: {raid_id} - {why}")
+    for raid_id, status in report.outcomes.items():
+        print(f"  결과: {raid_id} - {OUTCOME_KO.get(status, status)} (녹화의 결과 화면에서 읽음)")
+    if report.unread:
+        print(f"  결과 화면을 읽지 못한 녹화 {report.unread}개: Windows OCR(한국어)이 필요합니다. 다음에 다시 시도합니다.")
+    if report.stopped:
+        print(report.stopped)
+        return 1
     return 0
 
 
@@ -487,6 +582,11 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--open", action="store_true", help="브라우저 열기")
     sub.add_parser("demo", help="실제 기록 없이 볼 수 있는 데모 레이드를 만든다")
     sub.add_parser("doctor", help="감지한 폴더와 파일 수를 보여준다")
+    auto = sub.add_parser("auto", help="끝난 레이드의 녹화 영상에서 경로를 찾는다 (선택 기능, 게임을 끈 뒤 실행)")
+    auto.add_argument("--videos", help="OBS 녹화 폴더 (기본: OBS 설정에서 읽음)")
+    auto.add_argument("--ffmpeg", help="ffmpeg.exe와 ffprobe.exe가 있는 폴더 (기본: PATH)")
+    auto.add_argument("--model", help="MegaLoc 모델 파일 megaloc.onnx (기본: 데이터 폴더의 auto\\megaloc.onnx)")
+    auto.add_argument("--raid", action="append", help="이 레이드의 경로만 다시 쓴다 (여러 번 지정 가능)")
     return parser
 
 
@@ -497,7 +597,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd is None:  # bare "py -m eftjourney [--logs ...]" means run
         args.cmd, args.port, args.interval, args.no_open = "run", DEFAULT_PORT, DEFAULT_INTERVAL, False
         args.bare = True  # a hint in words then adds "run" too
-    handler = {"run": cmd_run, "scan": cmd_scan, "serve": cmd_serve, "demo": cmd_demo, "doctor": cmd_doctor}[args.cmd]
+    handler = {"run": cmd_run, "scan": cmd_scan, "serve": cmd_serve, "demo": cmd_demo, "doctor": cmd_doctor,
+               "auto": cmd_auto}[args.cmd]
     lock = None
     if args.cmd in ("run", "scan"):  # the two that rewrite raids; serve, demo and doctor go without
         data_dir = paths.data_dir(args.data)
@@ -508,6 +609,15 @@ def main(argv: list[str] | None = None) -> int:
         else:
             if lock is None:  # before anything is read, scanned or bound
                 return _data_taken(args.cmd, data_dir, getattr(args, "port", DEFAULT_PORT))
+    elif args.cmd == "auto":  # only its own files: one auto at a time, next to a run if need be
+        try:
+            lock = _lock_data(paths.data_dir(args.data), AUTO_LOCK_FILE)
+        except OSError:
+            lock = None
+        else:
+            if lock is None:
+                print("다른 창에서 auto가 이미 이 데이터 폴더를 분석하고 있습니다. 그 창이 끝난 뒤 다시 실행하세요.")
+                return 1
     try:
         return handler(Runtime(args), args)
     finally:

@@ -34,6 +34,8 @@
     raids: [],
     raid: null,
     track: [],
+    auto: [], // the route found from the raid's recording (eftjourney auto): a point a second with its sureness
+    autoDoc: null,
     mapEntry: null,
     rotated: false,
     t: 0,
@@ -43,7 +45,7 @@
     lastFrame: 0,
     statusVersion: null,
     status: {},
-    layersOn: Object.assign({ exfils: true, spawns: false, samples: true, kills: true, labels: true, fixes: true }, prefs.get('layers', {})),
+    layersOn: Object.assign({ exfils: true, spawns: false, samples: true, kills: true, labels: true, fixes: true, auto: true }, prefs.get('layers', {})),
     level: '',
     autoLevel: true,
     follow: false,
@@ -275,7 +277,7 @@
     lmap.attributionControl.addAttribution(attributionHtml(entry));
     const bounds = boundsOf(entry.bounds);
     lmap.fitBounds(bounds);
-    for (const name of ['static', 'labels', 'route', 'fixes', 'samples', 'kills', 'marks', 'hover']) groups[name] = L.layerGroup().addTo(lmap);
+    for (const name of ['static', 'labels', 'auto', 'route', 'fixes', 'samples', 'kills', 'marks', 'hover']) groups[name] = L.layerGroup().addTo(lmap);
     buildStaticOverlays(entry);
     buildLabels(entry);
     lmap.on('zoomend', updateNowMarker);
@@ -415,6 +417,7 @@
       ${box('samples', '#fff', '기록 지점')}
       ${box('kills', 'var(--kill)', '킬')}
       ${(state.raid?.logFixes || []).length ? box('fixes', '#9aa1a9', '서버 위치 기록') : ''}
+      ${state.auto.length ? `${box('auto', 'var(--auto)', '영상으로 찾은 경로')}<div class="legend">실선 확실 · 흐린 선 보통 · 점선 불확실</div>` : ''}
       ${levels.length ? `<div class="title">층</div><select id="level">
           <option value="__auto">자동 (현재 위치)</option>
           <option value="">지상</option>
@@ -453,9 +456,12 @@
   }
 
   // ---------------------------------------------------------------- track math
+  // what playback follows: the screenshots' route, or without one the route found from the recording
+  const moving = () => (state.track.length > 1 || !state.auto.length ? state.track : state.auto);
+
   function segIndex(t) {
     // last i with track[i].t <= t
-    const tr = state.track;
+    const tr = moving();
     let lo = 0;
     let hi = tr.length - 1;
     if (!tr.length || t < tr[0].t) return -1;
@@ -467,7 +473,7 @@
     return lo;
   }
   function positionAt(t) {
-    const tr = state.track;
+    const tr = moving();
     if (!tr.length) return null;
     const i = segIndex(t);
     if (i < 0) return { ...tr[0], i: 0, frac: 0, before: true };
@@ -480,7 +486,7 @@
     return { x: a.x + (b.x - a.x) * f, y, z: a.z + (b.z - a.z) * f, yaw: a.yaw, i, frac: f };
   }
   function travelYaw(i) {
-    const tr = state.track;
+    const tr = moving();
     const a = tr[i];
     const b = tr[Math.min(i + 1, tr.length - 1)];
     if (a && b && Math.hypot(b.x - a.x, b.z - a.z) > 0.5) return (Math.atan2(b.x - a.x, b.z - a.z) * 180) / Math.PI;
@@ -558,12 +564,13 @@
     const o = state.raid?.outcome || {};
     if (o.status !== 'killed') return null;
     if (o.t != null) return o.t;
-    return state.track.length ? state.track[state.track.length - 1].t : null;
+    const mv = moving();
+    return mv.length ? mv[mv.length - 1].t : null;
   }
 
   // forget the previous raid's markers (also when the map goes away); the death time is the current raid's
   function resetRaidLayers() {
-    for (const name of ['route', 'fixes', 'samples', 'kills', 'marks', 'hover']) groups[name]?.clearLayers();
+    for (const name of ['auto', 'route', 'fixes', 'samples', 'kills', 'marks', 'hover']) groups[name]?.clearLayers();
     killMarkers.length = 0;
     progressLine = progressCasing = nowMarker = deathMarker = null;
     deathT = deathTime();
@@ -575,6 +582,8 @@
     const raid = state.raid;
     const tr = state.track;
     const route = css('--route');
+
+    if (state.auto.length > 1 && state.layersOn.auto) drawAuto();
 
     if (tr.length > 1) {
       // faint full route: solid where screenshots are close together, dashed across long gaps
@@ -636,7 +645,8 @@
     }
 
     const kills = raid.kills || [];
-    if (tr.length && state.layersOn.kills) {
+    const mv = moving();
+    if (mv.length && state.layersOn.kills) {
       kills.forEach((k, idx) => {
         const p = positionAt(k.t);
         const marker = L.marker(toLatLng(p), {
@@ -657,8 +667,8 @@
     }
 
     const outcome = raid.outcome || {};
-    if (tr.length && deathT != null) {
-      const p = outcome.t != null ? positionAt(outcome.t) : tr[tr.length - 1];
+    if (mv.length && deathT != null) {
+      const p = outcome.t != null ? positionAt(outcome.t) : mv[mv.length - 1];
       deathMarker = L.marker(toLatLng(p), {
         icon: L.divIcon({ className: 'mk-death', html: DEATH_SVG, iconSize: [34, 34], iconAnchor: [17, 17] }),
         zIndexOffset: 1000,
@@ -666,8 +676,8 @@
       deathMarker.addTo(groups.marks);
     }
 
-    if (tr.length) {
-      nowMarker = L.marker(toLatLng(tr[0]), {
+    if (mv.length) {
+      nowMarker = L.marker(toLatLng(mv[0]), {
         icon: L.divIcon({ className: '', html: NOW_HTML, iconSize: [26, 26], iconAnchor: [13, 13] }),
         interactive: false,
         keyboard: false,
@@ -675,6 +685,48 @@
       }).addTo(groups.marks);
     }
     setTime(state.t, true);
+  }
+
+  // sureness tiers of the recording's route: [unsure below, sure from]
+  const autoTiers = () => state.autoDoc?.sureTiers || [10, 20];
+  function autoTier(p) {
+    const [lo, hi] = autoTiers();
+    return p.sure == null ? 'unsure' : p.sure >= hi ? 'sure' : p.sure >= lo ? 'medium' : 'unsure';
+  }
+
+  function drawAuto() {
+    const au = state.auto;
+    const color = css('--auto');
+    const reach = state.autoDoc?.reach || 18; // metres a second: a longer move is a jump to another place
+    const styles = {
+      sure: { color, weight: 3.5, opacity: 0.95 },
+      medium: { color, weight: 3, opacity: 0.4 },
+      unsure: { color, weight: 2.5, opacity: 0.75, dashArray: '5 7' },
+    };
+    let run = [toLatLng(au[0])];
+    let kind = autoTier(au[0]);
+    const flush = () => {
+      if (run.length > 1) L.polyline(run, { ...styles[kind], interactive: false }).addTo(groups.auto);
+    };
+    for (let i = 1; i < au.length; i++) {
+      const a = au[i - 1];
+      const b = au[i];
+      const k = autoTier(b);
+      if (Math.hypot(b.x - a.x, b.z - a.z) > reach * Math.max(1, b.t - a.t)) {
+        flush();
+        L.polyline([toLatLng(a), toLatLng(b)], { color, weight: 2, opacity: 0.5, dashArray: '1 6', lineCap: 'round', interactive: false }).addTo(groups.auto);
+        run = [toLatLng(b)];
+        kind = k;
+      } else {
+        run.push(toLatLng(b));
+        if (k !== kind) {
+          flush();
+          run = [toLatLng(b)];
+          kind = k;
+        }
+      }
+    }
+    flush();
   }
 
   function updateNowMarker() {
@@ -763,6 +815,31 @@
     html += (state.raid.kills || []).map((k) => `<span class="tick kill" style="left:${pct(k.t)}" title="${esc(k.name)}"></span>`).join('');
     if (deathT != null) html += `<span class="tick death" style="left:${pct(deathT)}">&#10005;</span>`;
     ticks.innerHTML = html;
+    renderSureBand(pct);
+  }
+
+  // under the timeline, how sure the recording's route is at each moment: a run of colour per tier
+  function renderSureBand(pct) {
+    const band = $('#sure-band');
+    const au = state.auto;
+    band.classList.toggle('hidden', !au.length);
+    if (!au.length) return;
+    const colors = { sure: 'var(--auto)', medium: 'color-mix(in srgb, var(--auto) 40%, transparent)', unsure: 'var(--faint)' };
+    const step = state.autoDoc?.step || 1;
+    const stops = [`transparent ${pct(au[0].t - step / 2)}`];
+    let kind = autoTier(au[0]);
+    let from = au[0].t - step / 2;
+    for (let i = 1; i <= au.length; i++) {
+      const k = i < au.length ? autoTier(au[i]) : null;
+      if (k !== kind) {
+        const to = au[i - 1].t + step / 2;
+        stops.push(`${colors[kind]} ${pct(from)} ${pct(to)}`);
+        from = to;
+        kind = k;
+      }
+    }
+    stops.push(`transparent ${pct(from)}`);
+    band.style.background = `linear-gradient(to right, ${stops.join(', ')})`;
   }
 
   // ------------------------------------------------------------------- summary
@@ -778,6 +855,7 @@
     const fixes = (raid.logFixes || []).length;
     const entry = mapEntryFor(raid.map);
     if (!entry) notes.push('맵을 알 수 없습니다. 편집에서 맵을 골라 주세요.');
+    else if (!tr.length && state.auto.length) notes.push('위치 스크린샷 없이 녹화 영상만으로 찾은 경로입니다. 흐린 선과 점선 구간은 틀렸을 수 있습니다.');
     else if (!tr.length) notes.push(fixes
       ? `위치 스크린샷은 없지만 게임이 남긴 서버 위치 기록 ${fixes}개를 회색 점으로 표시했습니다.`
       : '이 레이드에는 위치 스크린샷이 없습니다. 레이드 중 스크린샷 키를 누르면 경로가 남습니다.');
@@ -790,6 +868,13 @@
     if (raid.exitViaTransit && raid.outcome?.source === 'log') notes.push('트랜짓으로 다음 맵에 이동했습니다 (로그 기준).');
     if (raid.insuranceHint) notes.push('레이드 직후 보험 메시지가 왔습니다. 장비를 잃었을 가능성이 있습니다 (사망 또는 MIA 추정).');
     if (raid.demo) notes.push('데모 레이드입니다. 실제 기록이 아닙니다.');
+    if (raid.outcome?.source === 'video') notes.push(`결과(${OUTCOME_LABEL[status] || status})는 녹화의 결과 화면에서 읽었습니다. 다르면 편집에서 고쳐 주세요.`);
+    if (state.auto.length) {
+      const sure = state.auto.filter((p) => autoTier(p) === 'sure').length / state.auto.length;
+      const check = state.autoDoc?.check;
+      notes.push(`분홍 선은 녹화 영상(${state.autoDoc?.video || '?'})으로 찾은 경로입니다: ${fmtClock(state.auto.length * (state.autoDoc?.step || 1))} 분량 중 ${Math.round(sure * 100)}%가 확실한 구간`
+        + (check ? `, 스크린샷과 비교하면 ${Math.round(check.within * 100)}%가 ${state.autoDoc.radius || 15} m 안(오차 중앙값 ${check.medianError} m).` : '.'));
+    }
     card.innerHTML = `
       <div class="sum-head"><h2>${esc(raid.title || label.ko)}</h2>${raid.title ? `<span class="muted">${esc(label.ko)}</span>` : ''}<span class="badge ${status}">${OUTCOME_LABEL[status] || status}</span>${raid.demo ? '<span class="badge demo">데모</span>' : ''}</div>
       <div class="sum-grid">
@@ -812,8 +897,12 @@
     const token = ++selectToken;
     requestedId = id;
     let raid;
+    let auto = null;
     try {
-      raid = await getJSON(`/api/raids/${encodeURIComponent(id)}`);
+      // its route from the recording only when the list says there is one (or the list isn't there yet)
+      const row = state.raids.find((r) => r.id === id);
+      const autoReq = row && !row.auto ? null : getJSON(`/api/raids/${encodeURIComponent(id)}/auto`).catch(() => null);
+      [raid, auto] = await Promise.all([getJSON(`/api/raids/${encodeURIComponent(id)}`), autoReq]);
     } catch (err) {
       if (token !== selectToken) return; // a newer request took over: its raid (or its own failure) is what the user sees
       requestedId = state.raid?.id ?? null; // it never came: the raid on screen is the last request again
@@ -825,9 +914,12 @@
     setPlaying(false);
     state.raid = raid;
     state.track = (raid.track || []).filter((s) => isFinite(s.x) && isFinite(s.z) && isFinite(s.t)).sort((a, b) => a.t - b.t);
+    state.autoDoc = auto;
+    state.auto = (auto?.route || []).filter((p) => isFinite(p.x) && isFinite(p.z) && isFinite(p.t)).sort((a, b) => a.t - b.t);
     const lastEvent = Math.max(
       0,
       ...state.track.map((s) => s.t),
+      state.auto.length ? state.auto[state.auto.length - 1].t : 0,
       ...(raid.logFixes || []).map((f) => f.t),
       ...(raid.kills || []).map((k) => k.t),
       raid.outcome?.t ?? 0,
@@ -862,7 +954,7 @@
 
   function fitRaid() {
     if (!lmap || !state.mapEntry) return;
-    const pts = state.track.length ? state.track : state.raid?.logFixes || [];
+    const pts = state.track.length ? state.track : state.auto.length ? state.auto : state.raid?.logFixes || [];
     if (pts.length > 1) lmap.fitBounds(L.latLngBounds(pts.map(toLatLng)).pad(0.25), { maxZoom: 4 });
     else if (pts.length === 1) lmap.setView(toLatLng(pts[0]), 3);
     else lmap.fitBounds(boundsOf(state.mapEntry.bounds));
@@ -890,7 +982,8 @@
     if (used.includes(current)) sel.value = current;
   }
 
-  const hasPositions = (r) => r.samples > 0 || r.fixes > 0 || r.demo; // screenshots or the server's own position records
+  // screenshots, the server's own position records, or a route found from the recording
+  const hasPositions = (r) => r.samples > 0 || r.fixes > 0 || r.demo || r.auto;
 
   function renderList() {
     const list = $('#raid-list');
@@ -918,7 +1011,7 @@
         <div class="ri-top"><span class="ri-map">${esc(r.title || label.ko)}${label.en && !r.title ? `<small>${esc(label.en)}</small>` : ''}</span>
           <span class="badge ${esc(r.outcome)}">${OUTCOME_LABEL[r.outcome] || esc(r.outcome)}</span></div>
         <div class="ri-meta num">${time ? `${pad(time.getHours())}:${pad(time.getMinutes())}` : ''}${r.duration ? ` · ${r.durationApprox ? '약 ' : ''}${fmtClock(r.duration)}` : ''}${r.mode === 'pve' ? ' · PvE' : r.mode === 'pvp' ? ' · PvP' : ''}${r.demo ? ' · 데모' : ''}</div>
-        <div class="ri-stats num">${r.samples ? `기록 ${r.samples}` : r.fixes ? `<span class="warn">서버 기록 ${r.fixes}</span>` : '<span class="warn">위치 기록 없음</span>'} · 킬 ${r.kills}${r.distance ? ` · ${fmtDist(r.distance)}` : ''}</div>
+        <div class="ri-stats num">${r.samples ? `기록 ${r.samples}` : r.auto ? '<span class="auto">영상 경로</span>' : r.fixes ? `<span class="warn">서버 기록 ${r.fixes}</span>` : '<span class="warn">위치 기록 없음</span>'}${r.samples && r.auto ? ' · <span class="auto">영상</span>' : ''} · 킬 ${r.kills}${r.distance ? ` · ${fmtDist(r.distance)}` : ''}</div>
       </li>`;
     }
     list.innerHTML = html;
